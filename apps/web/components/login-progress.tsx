@@ -17,9 +17,9 @@ const PHASE_LABELS: Record<BusyPhase, string> = {
 
 // How long to sit in a phase before admitting it is taking a while, and what to say then.
 //
-// `redirecting` is the long one by design: the document navigation to "/" costs the proxy's getUser plus
-// the overview's own query — ~4 s warm, up to ~12 s when the function is cold — so four seconds is past
-// the warm case and the extra line only appears when something really is slow.
+// `redirecting` is the long one by design: the document navigation to "/" costs the proxy's session
+// check plus the overview's own auth and query — ~4 s warm, up to ~12 s when the function is cold — so
+// four seconds is past the warm case and the extra line only appears when something really is slow.
 //
 // `authenticating` gets a threshold too, and it matters more than its short warm time (~1 s) suggests:
 // supabase-js sets no timeout on the sign-in request, so a dropped connection or a captive portal leaves

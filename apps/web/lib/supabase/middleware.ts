@@ -7,7 +7,7 @@ import { getPublicSupabaseEnv } from "@/lib/env";
 // components rendered after the proxy see the fresh tokens) and the response (so the browser stores them).
 //
 // `response` is a getter, not a snapshot: the response must be built after the request cookies were
-// updated, so read it only after the auth call (`supabase.auth.getUser()`), not by destructuring up front.
+// updated, so read it only after the auth call (`supabase.auth.getClaims()`), not by destructuring up front.
 export function createMiddlewareSupabaseClient(request: NextRequest) {
   const { url, publishableKey } = getPublicSupabaseEnv();
   const written: CookieToSet[] = [];

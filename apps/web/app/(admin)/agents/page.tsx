@@ -17,11 +17,17 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 // Agents and their claim counts (brief: "no agent management beyond that for now"). Each name links to
 // the claims table filtered to that agent.
 export default async function AgentsPage() {
-  // Per-segment check as well as the layout's (docs/PLAN.md decision j): a layout redirect does not stop
-  // this page from rendering.
-  await requireAdminPage();
   const db = await createServerSupabaseClient();
-  const agents = await listAgentsWithCounts(db);
+  // The admin gate for this segment (docs/PLAN.md decision j): the layout's call does not stop this page
+  // from rendering, so the page checks too. It runs concurrently with the page's own queries rather than
+  // first, which is safe because RLS is what protects the data — a non-admin's queries return only rows
+  // that user could read anyway (an agent: their own claims and own profile, nothing admin-only) — and
+  // requireAdminPage()'s redirect is a thrown error that rejects the Promise.all, so none of it renders.
+  // What the concurrency buys is one Supabase round trip less on the critical path.
+  const [, agents] = await Promise.all([
+    requireAdminPage(),
+    listAgentsWithCounts(db),
+  ]);
 
   return (
     <div className="flex flex-col gap-4">

@@ -1,16 +1,10 @@
 import { redirect } from "next/navigation";
-import {
-  adminClaimsQuerySchema,
-  type AdminClaimSummary,
-  type AdminClaimsQuery,
-  type Paginated,
-} from "@claims/shared";
+import { adminClaimsQuerySchema } from "@claims/shared";
 import { ClaimsFilters } from "@/components/claims-filters";
 import { ClaimsTable } from "@/components/claims-table";
 import { Pagination } from "@/components/pagination";
 import { requireAdminPage } from "@/lib/api/page-auth";
 import { claimsListHref } from "@/lib/claims-url";
-import type { Db } from "@/lib/db";
 import { listAdminClaims, listAgentRefs } from "@/lib/queries/admin";
 import { createServerSupabaseClient } from "@/lib/supabase/server";
 
@@ -20,10 +14,6 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 export default async function ClaimsPage({
   searchParams,
 }: PageProps<"/claims">) {
-  // Per-segment check as well as the layout's (docs/PLAN.md decision j): a layout redirect does not stop
-  // this page from rendering.
-  await requireAdminPage();
-
   const parsed = adminClaimsQuerySchema.safeParse(
     lastValues(await searchParams),
   );
@@ -32,10 +22,28 @@ export default async function ClaimsPage({
   const query = parsed.success ? parsed.data : adminClaimsQuerySchema.parse({});
 
   const db = await createServerSupabaseClient();
-  const [claims, agents] = await Promise.all([
-    listClaimsPage(db, query),
+  // The admin gate for this segment (docs/PLAN.md decision j): the layout's call does not stop this page
+  // from rendering, so the page checks too. It runs concurrently with the page's own queries rather than
+  // first, which is safe because RLS is what protects the data — a non-admin's queries return only rows
+  // that user could read anyway (an agent: their own claims and own profile, nothing admin-only) — and
+  // requireAdminPage()'s redirect is a thrown error that rejects the Promise.all, so none of it renders.
+  // What the concurrency buys is one Supabase round trip less on the critical path.
+  const [, claims, agents] = await Promise.all([
+    requireAdminPage(),
+    listAdminClaims(db, query),
     listAgentRefs(db),
   ]);
+
+  // A `page` past the last page (a bookmarked link whose filters now match fewer rows) is a stale URL too.
+  // With `count: "exact"` PostgREST answers 416 / PGRST103 when the offset is past the count (offset > total)
+  // and an empty page when offset == total; listAdminClaims turns both into an empty page, and both go back
+  // to page 1 instead of a 500 or an empty table under "Page 7 of 2". Page 1 has offset 0, so the redirect
+  // cannot loop. It runs after the Promise.all rather than inside it so that the auth redirect is the only
+  // one that can come out of the concurrent block: a non-admin always lands on /not-authorised, never on
+  // ?page=1 on the way there because the claims query happened to settle before requireAdminPage().
+  if (query.page > 1 && claims.data.length === 0) {
+    redirect(claimsListHref(query, { page: 1 }));
+  }
 
   return (
     <div className="flex flex-col gap-4">
@@ -60,23 +68,6 @@ export default async function ClaimsPage({
       <Pagination query={query} total={claims.total} />
     </div>
   );
-}
-
-// A `page` past the last page (a bookmarked link whose filters now match fewer rows) is a stale URL too.
-// With `count: "exact"` PostgREST answers 416 / PGRST103 when the offset is past the count (offset > total)
-// and an empty page when offset == total; both go back to page 1 instead of a 500 or an empty table under
-// "Page 7 of 2". Page 1 has offset 0, so the redirect cannot loop.
-async function listClaimsPage(
-  db: Db,
-  query: AdminClaimsQuery,
-): Promise<Paginated<AdminClaimSummary>> {
-  const claims = await listAdminClaims(db, query);
-  // A page past the end (stale link, narrower filters) comes back empty with the real total; land the
-  // admin on the first page instead of showing an empty table under "Page 7 of 2".
-  if (query.page > 1 && claims.data.length === 0) {
-    redirect(claimsListHref(query, { page: 1 }));
-  }
-  return claims;
 }
 
 // searchParams values are string | string[] | undefined; a repeated key keeps its last value, which is

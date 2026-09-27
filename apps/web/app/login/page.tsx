@@ -16,8 +16,9 @@ import { Label } from "@/components/ui/label";
 import { createBrowserSupabaseClient } from "@/lib/supabase/browser";
 
 // Email/password sign-in against Supabase Auth directly (docs/PLAN.md decision u). @supabase/ssr writes
-// the session cookies; proxy.ts then routes admins to "/" (the overview) and everyone else to
-// /not-authorised. This page navigates to the same place, so the two cannot disagree and bounce.
+// the session cookies; proxy.ts then sends any signed-in user on /login to "/" (the overview), and it is
+// requireAdminPage() in the (admin) layout and page that sends a non-admin on to /not-authorised (decision
+// j, amended 2026-09-27). This page navigates to the same "/", so the two cannot disagree and bounce.
 export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
@@ -63,7 +64,7 @@ export default function LoginPage() {
     // "loading your dashboard…" names. proxy.ts sends a signed-in admin on /login to the same path.
     //
     // A full document navigation rather than router.replace(): a client transition does not commit until
-    // the whole RSC payload has been fetched (the proxy's getUser, then the page's profile and dashboard
+    // the whole RSC payload has been fetched (the proxy's session check, then the page's profile and dashboard
     // queries — measured at ~4 s warm and ~12 s on a cold function), and until then the browser stays on
     // this page with the button disabled and nothing moving, which reads as a hang. Handing the
     // navigation to the browser shows its own progress immediately, streams the dashboard's loading

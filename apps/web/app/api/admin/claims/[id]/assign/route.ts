@@ -13,7 +13,11 @@ type Ctx = { params: Promise<{ id: string }> };
  * changes and agent-visible notes.
  */
 export const POST = route<Ctx>(async (request, { params }) => {
-  const { db } = await requireAdmin(request);
+  // "server": a revoked admin (signed out elsewhere, banned) must not get one more write in, so this
+  // handler pays the Auth server round trip that local verification skips (lib/api/auth.ts).
+  const { db } = await requireAdmin(request, {
+    verification: "server",
+  });
   const { id } = await params;
   const body = await parseBody(request, assignClaimSchema);
 

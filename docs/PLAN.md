@@ -27,21 +27,22 @@ claims-adjustment-system/
 │
 ├── apps/
 │   ├── web/
-│   │   ├── package.json        # next, react, tailwindcss, @supabase/ssr, @supabase/supabase-js, expo-server-sdk, zod, server-only, @claims/*
+│   │   ├── package.json        # next, react, tailwindcss, @supabase/ssr, @supabase/supabase-js, expo-server-sdk, zod, server-only, @claims/*; devDeps: vitest (since the 2026-09-27 amendment to (t))
 │   │   ├── next.config.ts      # transpilePackages: ['@claims/shared', '@claims/supabase']
 │   │   ├── tsconfig.json       # extends base; jsx, DOM lib, "@/*" paths
+│   │   ├── vitest.config.mts   # "@" alias + include lib/**/*.test.ts (2026-09-27)
 │   │   ├── eslint.config.mjs   # base + eslint-config-next + prettier
 │   │   ├── postcss.config.mjs  # @tailwindcss/postcss
 │   │   ├── components.json     # shadcn/ui
 │   │   ├── vercel.json         # framework: nextjs (Root Directory = apps/web is a dashboard setting)
 │   │   ├── .env.example
-│   │   ├── middleware.ts       # session refresh + admin gate for pages only (named proxy.ts if the installed Next major requires it)
+│   │   ├── middleware.ts       # session refresh + signed-in gate for pages only (named proxy.ts if the installed Next major requires it); the admin gate is the (admin) layout + pages + RLS since the 2026-09-27 amendment to (j)
 │   │   ├── app/
 │   │   │   ├── layout.tsx, globals.css
-│   │   │   ├── page.tsx                    # redirect('/claims')
+│   │   │   ├── (admin)/page.tsx            # RSC overview at "/" → getDashboardMetrics() (replaced the root redirect('/claims') page)
 │   │   │   ├── login/page.tsx              # client form → browser client signInWithPassword
 │   │   │   ├── not-authorised/page.tsx     # signed-in non-admins land here; sign-out button
-│   │   │   ├── (admin)/layout.tsx          # RSC: requireAdminPage() again (defence in depth); nav; sign-out
+│   │   │   ├── (admin)/layout.tsx          # RSC: requireAdminPage(), the first admin check since the 2026-09-27 amendment to (j) (each page calls it too); nav; sign-out
 │   │   │   ├── (admin)/claims/page.tsx     # RSC table; searchParams parsed with adminClaimsQuerySchema → listAdminClaims()
 │   │   │   ├── (admin)/claims/[id]/page.tsx# RSC detail → getAdminClaimDetail() (includes signed file URLs)
 │   │   │   ├── (admin)/agents/page.tsx     # RSC → listAgentsWithCounts()
@@ -72,7 +73,8 @@ claims-adjustment-system/
 │   │   │   └── status-badge.tsx
 │   │   └── lib/
 │   │       ├── api-client.ts       # apiFetch() for client components: browser client getSession() → Authorization: Bearer
-│   │       ├── api/auth.ts         # requireUser(req) / requireAdmin(req): bearer token → getUser(token) → { user, profile, db }
+│   │       ├── api/auth.ts         # requireUser(req, opts?) / requireAdmin(req, opts?): bearer token → getClaims(token) locally, or getUser(token) for the admin mutations → { user: { id, email }, profile, db }
+│   │       ├── api/auth.test.ts    # requireUser/requireAdmin through their public surface with the bearer client faked (2026-09-27)
 │   │       ├── api/handler.ts      # route(fn): try/catch → { error } JSON; parseBody / parseQuery with zod; ok(data)
 │   │       ├── api/errors.ts       # ApiError; API code ↔ HTTP status; PostgrestError/SQLSTATE → code
 │   │       ├── api/page-auth.ts    # requireAdminPage(): RSC variant over the cookie client; redirects instead of throwing
@@ -760,12 +762,12 @@ Everything else — every read and every admin mutation on `claims`, `claim_file
 
 ### Authentication in every handler
 
-Handlers accept **bearer tokens only** and never read cookies (decision g). `lib/api/auth.ts` exports `requireUser(req)` and `requireAdmin(req)`:
+Handlers accept **bearer tokens only** and never read cookies (decision g). `lib/api/auth.ts` exports `requireUser(req, opts?)` and `requireAdmin(req, opts?)` (`opts.verification`, see step 2):
 
 1. Read `Authorization: Bearer <jwt>`; missing → `UNAUTHENTICATED`.
-2. `createBearerClient({ url, key, accessToken })` (publishable key as `apikey`, the JWT as global `Authorization`, no session persistence) → `db.auth.getUser(accessToken)`. Invalid/expired → `UNAUTHENTICATED`.
+2. `createBearerClient({ url, key, accessToken })` (publishable key as `apikey`, the JWT as global `Authorization`, no session persistence), then verify the token. Default (`verification: 'local'`, amended 2026-09-27): `db.auth.getClaims(accessToken)` checks the ES256 signature in-process against the project's key set, which auth-js fetches once per process and caches for 10 minutes (the endpoint is CDN-cached), so the warm path makes no request to the Auth server. `verification: 'server'`: `db.auth.getUser(accessToken)`, one round trip, sees revocation; used by the three admin mutation handlers. Either way invalid/expired → `UNAUTHENTICATED`, Auth server or JWKS endpoint unreachable → `INTERNAL`.
 3. Read own `profiles` row through the same client (RLS: own row) → `profile`.
-4. Return `{ user, profile, db }`. `requireAdmin` throws `FORBIDDEN` unless `profile.role === 'admin'`. Every `/api/admin/*` handler calls it first; the DB re-checks via `is_admin()` regardless.
+4. Return `{ user: { id, email }, profile, db }`. `requireAdmin` throws `FORBIDDEN` unless `profile.role === 'admin'`. Every `/api/admin/*` handler calls it first; the DB re-checks via `is_admin()` regardless.
 
 Mobile sends the header from its Supabase session; the web dashboard's client components fetch the token from the browser client (`lib/api-client.ts`). Cookies are the transport for **pages** only (middleware and RSC via `@supabase/ssr`). Middleware does not run on `/api/*`. Agent routes add `.eq('agent_id', user.id)` in addition to RLS so "not yours" is a clean `NOT_FOUND`.
 
@@ -835,11 +837,15 @@ Web dashboard mutations call the same `/api/admin/*` routes from client componen
 
 **(g) Bearer-only route handlers.** The brief says handlers verify the caller by passing the bearer token to `getUser()`. Web client components fetch their access token from the browser client and send it as a bearer too, so there is no ambient credential, no CSRF surface, one auth path. Rejected alternative (vetoable): also accepting the cookie session in handlers, which needs a second auth branch plus an Origin/CSRF rule.
 
+_Amended 2026-09-27._ Handlers still take bearer tokens only, but the default verification is now local: `requireUser(req)` calls `auth.getClaims(token)`, which checks the ES256 signature with WebCrypto against the project's JSON Web Key Set; auth-js 2.114 fetches that set once per process and caches it for 10 minutes (per process and keyed by storage key, so clients in the same function that use the default `sb-<ref>-auth-token` key — the bearer and Server Component clients — share one entry; the proxy's runtime keeps its own; the endpoint itself is CDN-cached), so the warm path makes no request to the Auth server. Measured today: the page functions run in Washington (iad1) and Supabase in Ohio, and every handler was spending one serial round trip on `getUser()` before its first query. What local verification cannot see is server-side revocation — a sign-out on another device, a ban, a password change — until the token expires (1 hour by default); PostgREST, which every query goes through, already accepts such a token for the same hour, so the online check protected reads from nothing. The three admin mutation handlers (`status`, `assign`, `notes`) call `requireAdmin(req, { verification: 'server' })` and keep the `getUser()` round trip, because a revoked admin must not be able to change a claim. The JWKS fetch failing surfaces as the same `AuthRetryableFetchError` → `INTERNAL` the Auth server outage did.
+
 **(h) Expo password reset: PKCE.** Mobile client `flowType: 'pkce'`, AsyncStorage. `resetPasswordForEmail(email, { redirectTo })` where `redirectTo` is the literal `claimsagent://reset-password` in dev/preview/production builds and `Linking.createURL('reset-password')` only in Expo Go (yields `exp://<lan-ip>:8081/--/reset-password`). Supabase verifies server-side and redirects with `?code=`; `app/reset-password.tsx` calls `exchangeCodeForSession(code)` then `updateUser({ password })`. It also reads the full URL to surface `error_code=otp_expired` etc. Why PKCE over implicit: implicit puts tokens in the URL fragment. Cost: the link must be opened on the phone that requested it, in a real browser (some mail apps' in-app browsers do not follow the redirect to a custom scheme) — see open question 5. Exact dashboard values in §5.
 
 **(i) Push: send tickets only, no receipt polling [assumption: "minimally" + "no queue"].** `lib/push.ts` runs inside Next's `after()`: `sendPushNotificationsAsync([{ to, title, body, data: { claim_id } }])`; a ticket with `details.error === 'DeviceNotRegistered'` nulls the token via the service client. Limitation, stated plainly: APNs/FCM-side invalidations arrive in Expo's _receipts_ ~15 min later, and a ticket only says `DeviceNotRegistered` once Expo has already learned it, so a token that dies between app launches costs one failed send before it is nulled (the app re-registers on every launch anyway). Opt-in upgrade (open question 4): a service-role-only `push_tickets` table storing ticket ids, drained through `getPushNotificationReceiptsAsync` on the next admin send.
 
 **(j) Admin-only enforcement, three places plus the DB.** Middleware (matcher: every page path, not `/api`, `_next`, static): `getUser()` before any early return, cookies copied onto every redirect (otherwise a refresh that lands on a redirecting request logs the admin out); no user → `/login`; non-admin → `/not-authorised`; admin on `/login` → `/claims`. `(admin)/layout.tsx` and every admin page call `requireAdminPage()` (deduped per request with React `cache`): a layout's redirect ends only the layout's own render, not the page segment's, so the page-level call is what keeps a path the matcher misses from rendering admin data. `requireAdmin` in every admin handler. `is_admin()` in every admin policy. Rejected: stamping `role` into the JWT via an Auth Hook — dashboard-configured and stale until token refresh; not worth it at two roles.
+
+_Amended 2026-09-27._ The middleware (`proxy.ts`) is no longer one of the three places: it is a session refresh plus a signed-in gate only — `getClaims()` (local signature check, still before any early return because it is what refreshes the session and writes cookies), no user → `/login`, signed-in on `/login` → `/`, everything else passes; the `profiles` role lookup is gone. Measured today on production: the proxy runs at the Vercel edge nearest the visitor (Mumbai, bom1) while pages run in Washington and Supabase in Ohio, so its `getUser()` + `profiles` pair cost ~0.4 s of the 1.1–1.6 s a warm admin page took, and the page repeated both checks anyway. The admin gate is therefore `(admin)/layout.tsx` and every admin page via `requireAdminPage()` — now `getClaims()` (local) + the `profiles` role check, run with `Promise.all` alongside the page's own queries rather than before them, which is safe because RLS limits every query to rows the caller could read anyway (an agent's own claims and own profile, nothing admin-only) and the redirect thrown by `requireAdminPage()` rejects the whole `Promise.all`, so none of it renders — plus `requireAdmin` in every admin handler and `is_admin()` in every admin policy. A signed-in agent who opens an admin URL now reaches the page function and is redirected to `/not-authorised` from there instead of from the edge.
 
 **(k) Offset pagination** (`page`, `per_page` ≤ 100) via `.range()` + `count: 'exact'`, sort ∈ {created_at, updated_at, status, title}. Server-rendered from URL search params, so filters are shareable links. Keyset is faster at scale but hostile to "jump to page 7" and sortable columns.
 
@@ -860,6 +866,8 @@ Web dashboard mutations call the same `/api/admin/*` routes from client componen
 **(s) Mobile choices.** Session storage: AsyncStorage (Supabase's documented Expo setup; `expo-secure-store` has a 2 KB value limit a session exceeds) with the `AppState` auto-refresh listener. Forms: react-hook-form + `zodResolver` **[addition]** so form state survives a failed request without hand-rolled code; no server-state library (plain `fetch` + `useState`, retry via the error banner). Uploads: `expo-file-system/legacy` `createUploadTask` — on current SDKs the package root exports the new File/Directory API, which has no upload-with-progress primitive. Expo Go for Phases 0–4 (handles `exp://` deep links, so password reset is testable); development build with `expo-dev-client` from Phase 5 (Expo Go cannot receive remote push or open `claimsagent://`). Notification taps use `useLastNotificationResponse()` so cold-start taps work, navigating only once the session has resolved.
 
 **(t) zod v4; vitest** only in `packages/shared` (transition matrix, schema fixtures), running raw TS with no transform config.
+
+_Amended 2026-09-27._ Also in `apps/web`: `lib/api/auth.test.ts` covers `requireUser`/`requireAdmin` through their public surface with `@claims/supabase/bearer` mocked, so header parsing, both verification modes, the error mapping and the profile lookup are the real code and auth-js's key-set cache is never exercised. `apps/web/vitest.config.mts` exists only to map the tsconfig `@/*` alias and to scope `test.include` to `lib/**/*.test.ts` (still raw TS, no transform config; `.mts` because the Next app's `package.json` is CommonJS and Vite warns about an ESM `.ts` config). The `test` script runs under the root `turbo run test`, which depends on `typecheck`.
 
 **(u) Web sign-in uses the browser client** (`signInWithPassword`; `@supabase/ssr` writes cookies). No auth API route; clients talk to Supabase Auth directly **[assumption]**.
 

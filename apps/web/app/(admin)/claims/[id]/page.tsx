@@ -23,15 +23,19 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 export default async function ClaimDetailPage({
   params,
 }: PageProps<"/claims/[id]">) {
-  // Per-segment check as well as the layout's (docs/PLAN.md decision j): a layout redirect does not stop
-  // this page from rendering.
-  await requireAdminPage();
   const { id } = await params;
   // A non-uuid id would make Postgres raise 22P02; treat it as "no such claim" instead of a 500.
   if (!z.uuid().safeParse(id).success) notFound();
 
   const db = await createServerSupabaseClient();
-  const [claim, agents] = await Promise.all([
+  // The admin gate for this segment (docs/PLAN.md decision j): the layout's call does not stop this page
+  // from rendering, so the page checks too. It runs concurrently with the page's own queries rather than
+  // first, which is safe because RLS is what protects the data — a non-admin's queries return only rows
+  // that user could read anyway (an agent: their own claims and own profile, nothing admin-only) — and
+  // requireAdminPage()'s redirect is a thrown error that rejects the Promise.all, so none of it renders.
+  // What the concurrency buys is one Supabase round trip less on the critical path.
+  const [, claim, agents] = await Promise.all([
+    requireAdminPage(),
     getAdminClaimDetail(db, id),
     listAgentRefs(db),
   ]);

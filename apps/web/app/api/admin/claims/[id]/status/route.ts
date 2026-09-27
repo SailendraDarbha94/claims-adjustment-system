@@ -15,7 +15,11 @@ type Ctx = { params: Promise<{ id: string }> };
  * claims_guard_update re-checks it in the DB and its CL001 maps to INVALID_TRANSITION too.
  */
 export const POST = route<Ctx>(async (request, { params }) => {
-  const { user, db } = await requireAdmin(request);
+  // "server": a revoked admin (signed out elsewhere, banned) must not get one more write in, so this
+  // handler pays the Auth server round trip that local verification skips (lib/api/auth.ts).
+  const { user, db } = await requireAdmin(request, {
+    verification: "server",
+  });
   const { id } = await params;
   const body = await parseBody(request, changeStatusSchema);
 

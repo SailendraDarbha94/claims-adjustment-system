@@ -2,9 +2,9 @@ import Link from "next/link";
 import { SignOutButton } from "@/components/sign-out-button";
 import { requireAdminPage } from "@/lib/api/page-auth";
 
-// Every admin page lives under this layout. proxy.ts already gates these paths; this is the second check
-// (docs/PLAN.md decision j) for the layout's own render. It does not stop the page segment from rendering,
-// so each page calls requireAdminPage() too (deduped per request).
+// Every admin page lives under this layout. proxy.ts only checks that a session exists (docs/PLAN.md
+// decision j, amended 2026-09-27), so this is the first admin check, for the layout's own render. It does
+// not stop the page segment from rendering, so each page calls requireAdminPage() too (deduped per request).
 export default async function AdminLayout({
   children,
 }: {

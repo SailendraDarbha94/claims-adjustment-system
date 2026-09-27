@@ -12,9 +12,16 @@ import { createServerSupabaseClient } from "@/lib/supabase/server";
 // renders for a signed-out visitor; the email line is simply omitted then.
 export default async function NotAuthorisedPage() {
   const supabase = await createServerSupabaseClient();
-  const {
-    data: { user },
-  } = await supabase.auth.getUser();
+  // Only the email is wanted, and a locally verified token carries it (auth-js checks the signature against
+  // its process-cached key set); no Auth server round trip.
+  let email: string | null = null;
+  try {
+    const { data } = await supabase.auth.getClaims();
+    email = typeof data?.claims.email === "string" ? data.claims.email : null;
+  } catch {
+    // A cookie whose token auth-js cannot decode (see verifyLocally in lib/api/auth.ts) gets the
+    // signed-out rendering rather than an error page.
+  }
 
   return (
     <main className="flex flex-1 items-center justify-center p-6">
@@ -26,10 +33,10 @@ export default async function NotAuthorisedPage() {
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
-          {user?.email ? (
+          {email ? (
             <p className="text-sm text-muted-foreground">
               Signed in as{" "}
-              <span className="font-medium text-foreground">{user.email}</span>.
+              <span className="font-medium text-foreground">{email}</span>.
             </p>
           ) : null}
           <div>
